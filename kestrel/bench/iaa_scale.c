@@ -9,8 +9,11 @@
 // Build on the box:
 //   cc -O2 -std=c11 -o iaa_scale iaa_scale.c corpus.c metrics.c -ldeflate
 //      -L/usr/local/lib -lqpl -laccel-config -lstdc++ -ldl -lpthread
-// Run (needs ~1.5 * pool_gb of RAM; IAA work queues need access → sudo):
+// Run (needs ~pool_gb + up to 8 GB of RAM; IAA work queues need access → sudo):
 //   sudo ./iaa_scale ../corpus [pool_gb=8] [dur_s=3] | tee scale.csv
+// pool_gb 8-16 is already far past cache (representative sustained-cold); much larger just
+// adds TLB/NUMA page-walk overhead that real MB-sized bodies from warm buffers don't see.
+// The decompress (compressed) pool is capped at 8 GB internally — cold but RAM-bounded.
 #include "corpus.h"
 #include "metrics.h"
 #include <libdeflate.h>
@@ -132,7 +135,8 @@ int main(int argc, char **argv) {
     }
 
     // 2) compressed pool: IAA-compress each tile once (cold-decompress source).
-    size_t CCAP = POOL / 2 + (1u << 26); // IAA ratio <= ~0.42, so half the pool + slack fits
+    size_t CCAP = POOL / 2 + (1u << 26);          // compressed <= ~0.42x, so half the pool holds it,
+    if (CCAP > (8ull << 30)) CCAP = 8ull << 30;   // but cap the decompress pool at 8 GB (>> cache = cold, RAM-bounded)
     uint8_t *cpool = malloc(CCAP);
     uint32_t *origlen = malloc((size_t)T * sizeof *origlen);
     tile_t *ct = malloc((size_t)T * sizeof *ct);
@@ -141,7 +145,8 @@ int main(int argc, char **argv) {
     if (!pj || qpl_init_job(qpl_path_hardware, pj) != QPL_STS_OK) { fprintf(stderr, "qpl_init_job failed\n"); return 1; }
     for (int t = 0; t < T; t++) {
         if (coff + dbound(ut[t].len) > CCAP) break;
-        setup_c(pj, upool + ut[t].off, ut[t].len, cpool + coff, (uint32_t)(CCAP - coff));
+        // available_out is a uint32_t — pass the per-tile bound, NOT (CCAP-coff) which overflows 32 bits.
+        setup_c(pj, upool + ut[t].off, ut[t].len, cpool + coff, (uint32_t)dbound(ut[t].len));
         if (qpl_execute_job(pj) != QPL_STS_OK) { fprintf(stderr, "prep compress failed at tile %d\n", t); break; }
         ct[Tc].off = coff; ct[Tc].len = (uint32_t)pj->total_out; origlen[Tc] = ut[t].len;
         coff += pj->total_out; Tc++;
