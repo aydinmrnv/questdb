@@ -1602,7 +1602,6 @@ public class QwpEgressUpgradeProcessor implements HttpRequestProcessor, QuietClo
             throw HttpException.instance("egress: table block overflows send buffer");
         }
         long qwpEnd = preludeEnd + deltaSize + tableBlockSize;
-        if (io.questdb.std.KestrelDump.on()) io.questdb.std.KestrelDump.dump("egress", preludeEnd, (int) (qwpEnd - preludeEnd));
 
         // Optional zstd compression of the post-prelude body. The prelude stays
         // raw so the client I/O thread can peek msg_kind + requestId + batchSeq
@@ -1709,7 +1708,6 @@ public class QwpEgressUpgradeProcessor implements HttpRequestProcessor, QuietClo
             throw HttpException.instance("egress: table block overflows send buffer");
         }
         long qwp1End = preludeEnd + deltaSize + tableBlockSize;
-        if (io.questdb.std.KestrelDump.on()) io.questdb.std.KestrelDump.dump("egress", preludeEnd, (int) (qwp1End - preludeEnd));
 
         if (state.getCompressionCodec() == QwpConstants.COMPRESSION_ZSTD) {
             int bodyLen = (int) (qwp1End - preludeEnd);

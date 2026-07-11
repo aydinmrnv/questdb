@@ -837,7 +837,6 @@ public class QwpIngressUpgradeProcessor implements HttpRequestProcessor {
 
     private void handleBinaryMessage(HttpConnectionContext context, QwpIngressProcessorState state, long payload, int length)
             throws PeerDisconnectedException, PeerIsSlowToReadException, ServerDisconnectException {
-        if (io.questdb.std.KestrelDump.on()) io.questdb.std.KestrelDump.dump("ingress", payload, length);
         long seq = state.nextMessageSequence();
         LOG.debug().$("WebSocket binary message [fd=").$(context.getFd())
                 .$(", len=").$(length)
