@@ -2,6 +2,8 @@
 selftest
 bench
 iaa_offload
+iaa_scale
 *.o
 results.csv
 offload.csv
+scale.csv
