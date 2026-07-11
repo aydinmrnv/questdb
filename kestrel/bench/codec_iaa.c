@@ -5,7 +5,9 @@
 typedef struct { qpl_job *job; int level; } iaa_t;
 static void *iaa_mk(int lvl){
     uint32_t sz; if(qpl_get_job_size(qpl_path_hardware,&sz)!=QPL_STS_OK) return NULL;
-    iaa_t *s=calloc(1,sizeof*s); s->job=malloc(sz); s->level=lvl;
+    iaa_t *s=calloc(1,sizeof*s); if(!s) return NULL;
+    s->job=malloc(sz); if(!s->job){ free(s); return NULL; }
+    s->level=lvl;
     if(qpl_init_job(qpl_path_hardware,s->job)!=QPL_STS_OK){ free(s->job); free(s); return NULL; }
     return s;
 }

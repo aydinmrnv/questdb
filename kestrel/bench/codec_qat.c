@@ -10,11 +10,12 @@ typedef struct { ZSTD_CCtx *c; void *st; } qz_t;
 static int qat_zstd_started = 0;
 static void *qz_mk(int lvl){
     if(!qat_zstd_started){ if(QZSTD_startQatDevice()!=QZSTD_OK) return NULL; qat_zstd_started=1; }
-    qz_t *s=calloc(1,sizeof*s); s->c=ZSTD_createCCtx(); s->st=QZSTD_createSeqProdState();
-    if(!s->c||!s->st){ free(s); return NULL; }
-    ZSTD_CCtx_setParameter(s->c, ZSTD_c_compressionLevel, lvl);
+    qz_t *s=calloc(1,sizeof*s); if(!s) return NULL;
+    s->c=ZSTD_createCCtx(); s->st=QZSTD_createSeqProdState();
+    if(!s->c||!s->st){ if(s->c)ZSTD_freeCCtx(s->c); if(s->st)QZSTD_freeSeqProdState(s->st); free(s); return NULL; }
+    if(ZSTD_isError(ZSTD_CCtx_setParameter(s->c, ZSTD_c_compressionLevel, lvl))){ ZSTD_freeCCtx(s->c); QZSTD_freeSeqProdState(s->st); free(s); return NULL; }
     ZSTD_registerSequenceProducer(s->c, s->st, qatSequenceProducer);
-    ZSTD_CCtx_setParameter(s->c, ZSTD_c_enableSeqProducerFallback, 1);
+    if(ZSTD_isError(ZSTD_CCtx_setParameter(s->c, ZSTD_c_enableSeqProducerFallback, 1))){ ZSTD_freeCCtx(s->c); QZSTD_freeSeqProdState(s->st); free(s); return NULL; }
     return s;
 }
 static size_t qz_co(void *v,const uint8_t*src,size_t n,uint8_t*dst,size_t cap){ qz_t*s=v; size_t r=ZSTD_compress2(s->c,dst,cap,src,n); return ZSTD_isError(r)?0:r; }
@@ -24,7 +25,7 @@ const codec_t QAT_ZSTD = {"qat-zstd",0,qz_mk,qz_co,NULL,qz_fr};
 // qat-deflate: QATzip hardware Deflate, both directions. Uses raw deflate to match QWP framing.
 typedef struct { QzSession_T sess; } qd_t;
 static void *qd_mk(int lvl){
-    qd_t *s=calloc(1,sizeof*s);
+    qd_t *s=calloc(1,sizeof*s); if(!s) return NULL;
     if(qzInit(&s->sess, 1 /*sw_backup*/)!=QZ_OK){ free(s); return NULL; }
     QzSessionParamsDeflate_T p; qzGetDefaultsDeflate(&p);
     p.data_fmt = QZ_DEFLATE_RAW; p.common_params.comp_lvl = lvl;
