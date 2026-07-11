@@ -1,5 +1,7 @@
 # build artifacts
 selftest
 bench
+iaa_offload
 *.o
 results.csv
+offload.csv
