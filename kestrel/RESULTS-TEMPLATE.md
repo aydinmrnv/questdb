@@ -100,7 +100,7 @@ If either B or C was marked GO:
 - **Throughput gain (compress)**: __x
 - **Throughput gain (decompress, if applicable)**: __x
 - **Cores freed**: __
-- **Next steps**: integrate into QuestDB qwpudp plugin (Phase B)
+- **Next steps**: wire the winning codec into the QWP egress compression path (Phase B)
 
 ## Raw Results
 

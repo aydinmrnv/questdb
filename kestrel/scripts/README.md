@@ -4,8 +4,8 @@
 
 1. **Clone/fetch the kestrel branch** on the Intel box (must have real corpus data):
    ```bash
-   git clone <repo> kestrel
-   cd kestrel/kestrel
+   git clone <repo-url> questdb   # repo root is the QuestDB tree
+   cd questdb/kestrel             # kestrel/ is this project's subdir
    ```
 
 2. **Probe the box** (read-only, no sudo needed initially):
@@ -62,7 +62,7 @@
 
 ```bash
 # On the Intel box:
-cd ~/kestrel/kestrel
+cd ~/questdb/kestrel
 bash scripts/probe.sh | tee probe-output.txt  # note what's available
 # ... install missing libs ...
 bash scripts/build-bench.sh
