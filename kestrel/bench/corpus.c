@@ -14,6 +14,8 @@ int corpus_load(const char *dir, corpus_t *out){
         if(out->n==cap){ cap*=2; out->v=realloc(out->v,cap*sizeof(body_t)); }
         body_t *b=&out->v[out->n]; b->buf=malloc(sz); b->len=fread(b->buf,1,sz,f); fclose(f);
         snprintf(b->name,sizeof b->name,"%s",e->d_name); out->n++; }
-    closedir(d); return out->n>0?0:-1;
+    closedir(d);
+    if (out->n == 0) { free(out->v); out->v = NULL; return -1; }
+    return 0;
 }
 void corpus_free(corpus_t *c){ for(int i=0;i<c->n;i++) free(c->v[i].buf); free(c->v); }
