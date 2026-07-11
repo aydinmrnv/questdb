@@ -15,18 +15,30 @@
    - If QAT/IAA sections are empty, re-run with `sudo bash scripts/probe.sh` to check device state & permissions
    - Note: the output shows available accelerators, ISA support, dev libraries, and toolchain
 
-3. **Install any missing dev libraries** based on probe output:
-   - For QAT: `libqatzip-dev libqatseqprod-dev libqat-dev libusdm-dev`
-   - For IAA: `libqpl-dev libaccel-config-dev`
-   - For codecs: `libzstd-dev libdeflate-dev`
-   - Example (Debian/Ubuntu):
+3. **Install the codec dev libraries** (needed for the software baseline):
+   ```bash
+   sudo apt-get install -y libzstd-dev libdeflate-dev
+   ```
+   `libaccel-config`, `libqat`, and `libusdm` ship with the distro accel-config /
+   qatlib runtime; install their `-dev` variants only if the linker can't find the
+   unversioned `.so`.
+
+4. **Accelerator libraries are build-from-source** (there are no `libqpl-dev` /
+   `libqatzip-dev` / `libqatseqprod-dev` distro packages):
+   - **IAA — `libqpl`** (`intel/qpl`), for `iaa-deflate`. Deps `build-essential cmake nasm`:
      ```bash
-     sudo apt-get install -y libzstd-dev libdeflate-dev libqpl-dev libaccel-config-dev libqatzip-dev libqatseqprod-dev libqat-dev libusdm-dev
+     git clone --recursive https://github.com/intel/qpl.git
+     cd qpl && mkdir build && cd build
+     cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local .. && cmake --build . -j
+     sudo cmake --build . --target install && sudo ldconfig
      ```
+   - **QAT — `libqatzip`** (`intel/QATzip`) and **`libqatseqprod`** (`intel/QAT-ZSTD-Plugin`),
+     for `qat-deflate` / `qat-zstd`. Need a configured qatlib/qatmgr and, for `qat-zstd`,
+     zstd ≥ 1.5.6 (point the Makefile at it with `ZSTD_PREFIX=`). See each project's README.
 
 ## Running the Benchmark
 
-4. **Build the benchmark harness** (auto-detects accelerator libs):
+5. **Build the benchmark harness** (auto-detects accelerator libs):
    ```bash
    bash scripts/build-bench.sh
    ```
@@ -34,7 +46,7 @@
    - Runs selftest to validate codec implementations
    - Builds `bench/bench` binary
 
-5. **Run the benchmark sweep** over the corpus:
+6. **Run the benchmark sweep** over the corpus:
    ```bash
    bash scripts/run-bench.sh
    ```
@@ -42,7 +54,7 @@
    - Produces `bench/results.csv` with schema: `codec,corpus,direction,level,block,ratio,throughput_MBps,p50_us,p99_us,p999_us,cpu_frac,cores_freed`
    - Prints a readable sorted table on stdout
 
-6. **Analyze results** using the template:
+7. **Analyze results** using the template:
    ```bash
    cat RESULTS-TEMPLATE.md
    ```
