@@ -64,7 +64,7 @@ Corpus-capture also modifies (throwaway, on-branch):
 
 ```bash
 #!/usr/bin/env bash
-# kestrel Phase 0 — QuestDB x Intel IAA/QAT readiness probe. READ ONLY (no writes/config).
+# kestrel Phase 0 — Intel IAA/QAT readiness probe. READ ONLY (no writes/config).
 # Run once as your user; re-run the QAT/IAA sections with sudo if they print empty/permission.
 set -u
 h(){ printf '\n\033[1m=== %s ===\033[0m\n' "$1"; }

@@ -33,16 +33,16 @@ real bodies rather than one size class.
 
 ## Fidelity: HIGH — real server, representative schema, both real egress code paths
 
-**Driver:** primary capture path from the task brief — a genuine 2-process setup, not
-the toy-schema embedded-test fallback:
+**Driver:** a 2-process capture setup (real server + real client, not an embedded
+test fixture):
 
 1. A throwaway QuestDB server built from this worktree's `core` (with the dump hooks
    compiled in), booted standalone via `java -cp core/target/classes io.questdb.ServerMain`
    against a fresh data dir, listening on non-default ports (47001 HTTP/WS+QWP, 47002
    PG wire, 47003 min-http) to avoid clashing with other QuestDB instances already
    running on this shared host. `line.tcp.enabled=false`; QWP UDP stays off (default).
-2. `benchmarks/src/main/java/org/questdb/QwpEgressReadBenchmark` (unmodified in the
-   final tree — see Deviations) run repeatedly against that server with
+2. `benchmarks/src/main/java/org/questdb/QwpEgressReadBenchmark` (unmodified) run
+   repeatedly against that server with
    `-DrowCount=` set to 50, 150, 500, 3000, 8000, 20000, 60000 to get a real size
    spread. Each run: (a) ingests rows over ILP/WebSocket (`Sender.fromConfig("ws::...")`)
    — this is QWP ingress traffic and fires the ingress hook once per `sender.flush()`
@@ -78,16 +78,14 @@ with high-cardinality symbols. No toy/embedded-test data is in this corpus, so n
 recapture is needed on fidelity grounds alone — the wide-schema addition is the one
 open gap.
 
-## Deviations from the task brief worth flagging
+## Capture notes
 
-- **Capture command:** the brief's `mvn exec:java` invocation on the JMH benchmark
-  classes does not work (confirmed by recon before this task started — see
-  `.superpowers/sdd/progress.md` line 5): these classes have `main()` methods but need
-  a separately-running server, not a JMH harness. Used the corrected 2-process approach
-  above instead.
-- **Second egress hook, not in the original brief.** The brief specified one hook, in
-  `sendResultBatch` after its `long qwpEnd = ...` line. That method is only reached
-  mid-stream, when a query needs more than one batch. Every capture attempt using only
+- **Capture command:** an `mvn exec:java` invocation on these benchmark classes does
+  not work — they have `main()` methods but need a separately-running server, not a JMH
+  harness. The 2-process approach above is used instead.
+- **Second egress hook needed.** A hook in `sendResultBatch` alone (after its
+  `long qwpEnd = ...` line) is not enough — that method is only reached mid-stream,
+  when a query needs more than one batch. Every capture attempt using only
   that hook produced **zero** egress files even though queries ran and returned correct
   data — because `QwpEgressUpgradeProcessor` has a second, deliberately-duplicated
   method, `sendResultBatchAndEnd` (its own doc comment: "Used on the cursor-exhausted

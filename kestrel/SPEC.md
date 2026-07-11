@@ -99,12 +99,13 @@ just QAT-accelerating the existing egress zstd.
   **external sequence producer** (API added in zstd 1.5.4; QuestDB bundles 1.5.7 ✅),
   offloading LZ77 match-finding to QAT for levels **L1–L12**. **Compression only** — it
   does not accelerate decompression. No dictionaries, no LDM, no stream history — which
-  matches QWP's one-shot per-batch `compress2`. Intel cites up to 3.2× throughput /
-  3.8× lower P99 / 3.3× perf-per-watt vs software zstd (to be re-measured here).
+  matches QWP's one-shot per-batch `compress2`. Vendor-published figures suggest a
+  throughput / tail-latency / perf-per-watt advantage over software zstd, to be
+  independently measured here.
 - **IAA → Deflate** via `intel/qpl` (`libqpl`, v1.9): Deflate **both** compress and
   decompress, plus fused decompress-and-scan. No official Rust crate — from QWP's Rust
   layer we FFI to the C `libqpl` (a small shim, mirroring the existing zstd binding).
-  ClickHouse's `DEFLATE_QPL` codec is precedent for the DB pattern.
+  An IAA-backed Deflate column codec has prior art in production OLAP engines.
 - **QAT → Deflate** via QATzip (`libqatzip`) — the QAT hardware **Deflate** engine,
   distinct from the zstd seqprod: **both** compress and decompress, standard RFC-1951
   Deflate. So Deflate can be offloaded by **either** accelerator, in **both** directions.
@@ -145,7 +146,8 @@ Numbers are placeholders until A establishes the software baseline; the gate is
 
 - Accelerating the always-on columnar serialization (Gorilla/varint/symbol-dict). It is
   the largest CPU cost but is not Deflate/zstd/scan-shaped; it is a SIMD/AVX-512 problem
-  and AVX-512 is not an Intel-vs-AMD differentiator. Out of scope.
+  and AVX-512 is broadly available on current server CPUs, so it is not an accelerator
+  differentiator. Out of scope.
 - QAT-for-TLS: real, but lives at an external reverse proxy (QuestDB terminates no TLS
   in-process). Captured as a one-line ops recommendation, not a phase.
 - IAA/QAT for Parquet reads: QuestDB Parquet defaults to **LZ4_RAW** (zstd/gzip optional

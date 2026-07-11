@@ -1,4 +1,5 @@
 // kestrel/bench/codec_qat.c   (compiled only with WITH_QAT)
+#define ZSTD_STATIC_LINKING_ONLY   // ZSTD_registerSequenceProducer + seqProducerFallback are experimental (must precede <zstd.h>)
 #include "codec.h"
 #include <stdlib.h>
 #include <zstd.h>
