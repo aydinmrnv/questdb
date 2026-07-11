@@ -3,8 +3,10 @@
 **Status:** draft · **Date:** 2026-07-11 · **Branch:** `kestrel` (off `master`)
 
 Evaluate, with measurements on real hardware accelerators, whether offloading the
-QWP wire protocol's compression stage to fixed-function accelerators (Intel QAT for
-zstd; Intel IAA for Deflate) is worthwhile, and if so wire the winner into QuestDB.
+QWP wire protocol's compression to fixed-function accelerators is worthwhile, and if so
+wire the winner into QuestDB. Two codec strategies are in scope: **accelerating the
+existing egress zstd** (QAT), and **offering Deflate across both egress *and* ingress**
+(IAA or QAT, both directions).
 
 The work is staged **A → B → C** so the cheap experiment (A) gates the two invasive
 integrations (B, C) and supplies the parameters they need (winning codec / level /
@@ -60,7 +62,7 @@ Compression facts that scope this work:
 |---|---|---|---|
 | Egress result **compress** | opt-in (default OFF, L1) | zstd | **QAT** seqprod (drop-in) · **IAA** *iff* a Deflate codec is added |
 | Egress/ingress **serialize/decode** | **always** | Gorilla / varint / symbol-dict | none — custom formats, a SIMD problem, not accelerator-shaped |
-| Ingress **decompress** | — | *nothing compressed* | no target unless a codec is added (IAA-Deflate) |
+| Ingress **compress** (client) / **decompress** (server) | — | *nothing compressed today* | **in scope:** add a Deflate codec → server-side decompress offloads to **IAA or QAT** (both do Deflate both directions) |
 | **TLS** crypto | — | external proxy only | QAT-at-proxy — an ops note, not a QuestDB change |
 | On-disk **Parquet** read | query-time | LZ4_RAW default (zstd/gzip optional) | reads = *decompress*: QAT decompress is Deflate-only, IAA is Deflate-only → only **gzip**-coded Parquet is offloadable; a storage-codec config, separate subsystem |
 
@@ -72,6 +74,22 @@ already ~GB/s and per-descriptor offload latency can eat the win on small batche
 > CPU**. Can an accelerator make a **high ratio** cheap enough to enable by default —
 > cutting egress bytes without burning cores — and **which** accelerator fits QWP's
 > small-block, delta-pre-encoded, latency-sensitive regime?
+
+**Why Deflate is worth evaluating across both directions.** Compression has four legs,
+and the *codec* choice decides which are hardware-offloadable:
+
+| Leg | Who runs it | zstd | Deflate |
+|---|---|---|---|
+| Egress compress | server | ✅ QAT (seqprod) | ✅ IAA · ✅ QAT |
+| Egress decompress | client | ❌ (QAT has no zstd-decompress) | ✅ IAA · ✅ QAT |
+| Ingress compress | client | ✅ QAT (seqprod) | ✅ IAA · ✅ QAT |
+| Ingress **decompress** | **server** | ❌ | ✅ IAA · ✅ QAT |
+
+zstd only offloads the *compress* legs (and only via QAT). **Deflate is the single codec
+that lets an accelerator offload all four legs** — crucially the **server-side ingress
+decompress**, the only way to bring hardware to the write path (ingress is uncompressed
+today). That is why the program evaluates a Deflate codec for egress **and** ingress, not
+just QAT-accelerating the existing egress zstd.
 
 ---
 
@@ -87,11 +105,15 @@ already ~GB/s and per-descriptor offload latency can eat the win on small batche
   decompress, plus fused decompress-and-scan. No official Rust crate — from QWP's Rust
   layer we FFI to the C `libqpl` (a small shim, mirroring the existing zstd binding).
   ClickHouse's `DEFLATE_QPL` codec is precedent for the DB pattern.
+- **QAT → Deflate** via QATzip (`libqatzip`) — the QAT hardware **Deflate** engine,
+  distinct from the zstd seqprod: **both** compress and decompress, standard RFC-1951
+  Deflate. So Deflate can be offloaded by **either** accelerator, in **both** directions.
 
-Key asymmetry that shapes B vs C: **QAT accelerates only compression and only zstd;
-IAA accelerates both directions but only Deflate.** So QAT is a near-drop-in for what
-QWP already does (egress compress); IAA requires a new codec but is the only path that
-could also accelerate a *decompress* direction (ingest, or the client).
+Key asymmetry that shapes the codec choice: **QAT's *zstd* path is compress-only
+(seqprod); its *Deflate* path (QATzip) and *IAA* are both-directions.** So accelerating
+the *existing* egress zstd (Phase B) only ever offloads compression; reaching the
+*decompress* legs — client egress-decompress and, above all, **server-side ingress
+decompress** — requires the **Deflate** codec (Phase C), which either IAA or QAT can drive.
 
 ---
 
@@ -150,24 +172,32 @@ tells us what must be configured/installed before building A, B, or C on the box
 
 ### Phase A — Codec bake-off harness (the de-risking core)
 
-A standalone harness that runs the **captured real egress bodies** (see §6) through all
-codecs and reports the §3 metrics into a CSV + printed table.
+A standalone harness that runs the **captured real egress *and* ingress bodies** (see §6)
+through all codecs, **both directions**, and reports the §3 metrics into a CSV + printed
+table.
 
 - **Codecs under test** (identical input buffers):
   - `sw-zstd` — libzstd 1.5.7, levels 1/3/6/9, one-shot `ZSTD_compress2` with a reused
     CCtx (mirrors QWP exactly);
   - `qat-zstd` — same libzstd + `libqatseqprod` registered via
-    `ZSTD_registerSequenceProducer`, `ZSTD_c_enableSeqProducerFallback=1`, levels 1–12;
+    `ZSTD_registerSequenceProducer`, `ZSTD_c_enableSeqProducerFallback=1`, levels 1–12
+    (compress only — the seqprod cannot decompress);
   - `iaa-deflate` — QPL hardware path (`qpl_path_hardware`, auto-fallback for control),
     compress **and** decompress, fixed vs dynamic Huffman;
+  - `qat-deflate` — QATzip hardware Deflate engine, compress **and** decompress, so we
+    learn which accelerator wins Deflate in each direction;
   - `sw-deflate` — libdeflate/zlib control at matching levels, to separate *format*
     (Deflate vs zstd) from *hardware* (accelerator vs CPU).
+
+  Each codec is measured **both directions** over **both** corpora — egress (server
+  compresses / client decompresses) and ingress (client compresses / **server
+  decompresses** — the leg that matters most for server CPU).
 - **Sweeps:** block size (8K/16K/32K/64K/128K and whole-body — this decides whether the
   accelerators' per-descriptor latency pays off); thread concurrency (device
   saturation, since accelerators have finite engines/queues).
 - **Correctness:** every codec round-trips (compress → decompress → byte-compare)
   before any timing run.
-- **Language:** **C** (all four libraries expose C APIs; zero binding friction; pure
+- **Language:** **C** (every codec library exposes a C API; zero binding friction; pure
   measurement). The harness is throwaway measurement code, not product code.
 - **Rust spike (de-risks B):** a tiny separate check of whether `zstd-safe 7.2.4`
   exposes sequence-producer registration, or whether B must call the raw symbol via
@@ -184,30 +214,40 @@ into the `libquestdbr` build (`build.rs` / Cargo). Flip `QwpEgressReadBenchmark`
 `compression=raw` to `zstd;level=<A-winner>` and measure QAT-on vs off: server CPU,
 egress MiB/s, latency. Stretch: assess eliding the compress copy-back (`:1621`/`:1719`).
 
-### Phase C — IAA-Deflate codec for QWP
+### Phase C — Deflate codec for QWP egress **and** ingress
 
-Add a new negotiated codec `deflate-iaa` alongside `zstd`
-(`QwpEgressCompressionNegotiator` + a new `FLAG_*` bit + a `Qpl`/`Iaa` JNI module in
-`qdbr` mirroring `qwp_zstd.rs`: `qplDeflate` / `qplInflate` over the QPL hardware path
-with auto-fallback). Validate server-side compress + a standalone round-trip.
-**Known limitation:** the QWP client is a shaded/relocated artifact with no source in
-this tree, so full end-to-end client-decode of `deflate-iaa` may not be exercisable
-here — server compress + standalone inflate is the measurable surface.
-**Stretch:** optional *ingress* compression negotiation so IAA also accelerates the
-write path (server-side inflate on ingest). This is a real protocol extension — ingress
-sends `null` content-encoding today — so it is explicitly experimental/out-of-band.
+Add a negotiated `deflate` codec (hardware-backed by IAA or QAT per the box, software
+fallback) across **both** directions, via a new `Deflate` JNI module in `qdbr`
+(mirroring `qwp_zstd.rs`: `deflateCompress` / `deflateDecompress` over QPL or QATzip,
+hardware path with auto-fallback):
+- **Egress:** add `deflate` to `QwpEgressCompressionNegotiator` + a new `FLAG_*` bit;
+  server compresses the result body (offloaded), client decompresses.
+- **Ingress:** negotiate `deflate` as an ingress content-encoding (today the handshake
+  passes `null`) and **decompress server-side via IAA/QAT** before the columnar decode.
+  This is the leg zstd can never offload and the main reason to add Deflate — it brings
+  hardware to the write path.
+
+Measure the two **server** legs (egress compress, ingress decompress) — where the CPU
+offload actually lands — plus standalone round-trips for correctness. **Known
+limitation:** the QWP client is a shaded/relocated artifact with no source in this tree,
+so full end-to-end *client*-side encode/decode of `deflate` may not be exercisable here;
+the server legs are the measurable surface, which is exactly what we care about.
 
 ---
 
 ## 6. Corpus capture (fidelity-critical)
 
-The compressor must see **real post-serialization egress bodies**, because QWP
-delta-encodes (Gorilla/symbol-dict) *before* zstd, feeding the compressor high-entropy
-input — raw CSV would overstate ratios and mislead the whole go/no-go.
+The compressor must see **real post-serialization QWP bodies — egress *and* ingress**,
+because QWP delta-encodes (Gorilla/symbol-dict) *before* any byte-compressor, feeding it
+high-entropy input — raw CSV would overstate ratios and mislead the whole go/no-go.
 
-- **Method:** add a throwaway dump hook at the pre-compress point in
-  `QwpEgressUpgradeProcessor` (the `preludeEnd..bodyLen` buffer) that writes each body to
-  a file, driven by `QwpEgressReadBenchmark` / real queries.
+- **Method (egress):** a throwaway dump hook at the pre-compress point in
+  `QwpEgressUpgradeProcessor` (the `preludeEnd..bodyLen` buffer) writes each result body,
+  driven by `QwpEgressReadBenchmark` / real queries.
+- **Method (ingress):** a matching hook in the ingress path (`QwpIngressProcessorState` /
+  `addData`) captures the raw columnar payloads the client sends (uncompressed today) —
+  what a Deflate ingest codec would compress and the **server** would decompress. Driven
+  by `QwpSenderBenchmark` / `QwpEquitiesL1Benchmark`.
 - **Where captured:** on the development box (the bodies are byte-identical regardless of
   CPU — it is just serialized data), so the corpus is generated here and **shipped with
   the code via git**; the accelerator box only builds + runs the bench over the `.bin`
@@ -231,7 +271,7 @@ No SSH to the box; git is the transport and the operator runs everything.
    neutral/technical for that reason). The box then clones/fetches the branch.
 3. Each phase is a small set of **copy-pasteable** scripts that print labelled results;
    no interactive access is needed.
-4. **Box build dependency:** A's `qat-zstd`/`iaa-deflate` and all of B/C must be built
+4. **Box build dependency:** A's `qat-zstd`/`iaa-deflate`/`qat-deflate` and all of B/C must be built
    **on the box** (the accelerator libraries and hardware exist only there). So the box
    needs a C toolchain + QAT/QPL dev libraries for A, and the full QuestDB build
    toolchain (JDK/Maven/cargo/cc/cmake) for B/C. Phase 0 detects these; a setup script
@@ -248,13 +288,17 @@ No SSH to the box; git is the transport and the operator runs everything.
 - **Default level 1.** The interesting result may be "level-9 ratio at ≤ level-1 CPU,"
   reframing the product question as "enable compression by default," not "speed up the
   current path." The bench must report ratio *and* CPU together, not throughput alone.
+- **Ingress compression is a client-CPU trade.** Adding Deflate on ingest spends *client*
+  CPU to compress in exchange for wire bytes plus an offloadable *server* decompress. On a
+  LAN the wire saving may not justify it; the win concentrates on constrained links and on
+  freeing server cores — A must report the ingress numbers so this is a data-backed call.
 - **Pre-encoding starves the compressor.** Gorilla/symbol-dict output is already
   low-redundancy; marginal compression (and thus the value of accelerating it) may be
   modest. The raw-column control quantifies this.
 - **`zstd-safe` API exposure** for sequence-producer registration (B) — mitigated by the
   Rust spike in A.
 - **QPL Rust binding** (C) — no official crate; small C-FFI shim required.
-- **Shaded client** — limits end-to-end `deflate-iaa` validation (C).
+- **Shaded client** — limits end-to-end `deflate` client-side validation (C).
 - **Accelerator config on the box** — IAA work queues must be *enabled* and QAT VFs
   *up*; Phase 0 catches an unconfigured device before we waste a build.
 
@@ -263,11 +307,12 @@ No SSH to the box; git is the transport and the operator runs everything.
 ## 9. Deliverables
 
 - **Phase 0:** `kestrel/scripts/probe.sh` + an interpretation of its output.
-- **Phase A:** `kestrel/bench/` (C harness + Makefile), the dump-hook patch, captured
-  `kestrel/corpus/*.bin`, `kestrel/scripts/run-bench.sh`, a results CSV, and a written
-  **go/no-go** with the software baseline.
+- **Phase A:** `kestrel/bench/` (C harness + Makefile), the egress+ingress dump-hook
+  patches, captured `kestrel/corpus/*.bin`, `kestrel/scripts/run-bench.sh`, a results
+  CSV, and a written **go/no-go** with the software baseline.
 - **Phase B:** `qwp_zstd.rs` + build-wiring patch, benchmark run, results.
-- **Phase C:** codec patch set + `Qpl` JNI module, benchmark run, results.
+- **Phase C:** `deflate` codec patch set (egress+ingress) + `Deflate` JNI module
+  (IAA/QAT), benchmark run, results.
 
 ---
 
