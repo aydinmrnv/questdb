@@ -1,0 +1,5 @@
+# build artifacts
+selftest
+bench
+*.o
+results.csv
