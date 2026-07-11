@@ -11,6 +11,7 @@ static size_t fill(uint8_t *b, size_t n) {
 }
 int main(void) {
     size_t n = 64 * 1024; uint8_t *in = malloc(n), *cmp = malloc(comp_bound(n)), *out = malloc(n);
+    if(!in||!cmp||!out){ fprintf(stderr,"OOM\n"); return 2; }
     fill(in, n);
     int fails = 0;
     for (int i = 0; i < codec_count(); i++) {
