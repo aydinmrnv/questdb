@@ -1,0 +1,58 @@
+diff --git a/core/src/main/java/io/questdb/cutlass/qwp/server/QwpIngressUpgradeProcessor.java b/core/src/main/java/io/questdb/cutlass/qwp/server/QwpIngressUpgradeProcessor.java
+index 335bdbfd08..20a147fa20 100644
+--- a/core/src/main/java/io/questdb/cutlass/qwp/server/QwpIngressUpgradeProcessor.java
++++ b/core/src/main/java/io/questdb/cutlass/qwp/server/QwpIngressUpgradeProcessor.java
+@@ -837,6 +837,7 @@ public class QwpIngressUpgradeProcessor implements HttpRequestProcessor {
+ 
+     private void handleBinaryMessage(HttpConnectionContext context, QwpIngressProcessorState state, long payload, int length)
+             throws PeerDisconnectedException, PeerIsSlowToReadException, ServerDisconnectException {
++        if (io.questdb.std.KestrelDump.on()) io.questdb.std.KestrelDump.dump("ingress", payload, length);
+         long seq = state.nextMessageSequence();
+         LOG.debug().$("WebSocket binary message [fd=").$(context.getFd())
+                 .$(", len=").$(length)
+diff --git a/core/src/main/java/io/questdb/cutlass/qwp/server/egress/QwpEgressUpgradeProcessor.java b/core/src/main/java/io/questdb/cutlass/qwp/server/egress/QwpEgressUpgradeProcessor.java
+index f9f6ea8443..3c2864cde2 100644
+--- a/core/src/main/java/io/questdb/cutlass/qwp/server/egress/QwpEgressUpgradeProcessor.java
++++ b/core/src/main/java/io/questdb/cutlass/qwp/server/egress/QwpEgressUpgradeProcessor.java
+@@ -1602,6 +1602,7 @@ public class QwpEgressUpgradeProcessor implements HttpRequestProcessor, QuietClo
+             throw HttpException.instance("egress: table block overflows send buffer");
+         }
+         long qwpEnd = preludeEnd + deltaSize + tableBlockSize;
++        if (io.questdb.std.KestrelDump.on()) io.questdb.std.KestrelDump.dump("egress", preludeEnd, (int) (qwpEnd - preludeEnd));
+ 
+         // Optional zstd compression of the post-prelude body. The prelude stays
+         // raw so the client I/O thread can peek msg_kind + requestId + batchSeq
+@@ -1708,6 +1709,7 @@ public class QwpEgressUpgradeProcessor implements HttpRequestProcessor, QuietClo
+             throw HttpException.instance("egress: table block overflows send buffer");
+         }
+         long qwp1End = preludeEnd + deltaSize + tableBlockSize;
++        if (io.questdb.std.KestrelDump.on()) io.questdb.std.KestrelDump.dump("egress", preludeEnd, (int) (qwp1End - preludeEnd));
+ 
+         if (state.getCompressionCodec() == QwpConstants.COMPRESSION_ZSTD) {
+             int bodyLen = (int) (qwp1End - preludeEnd);
+diff --git a/core/src/main/java/io/questdb/std/KestrelDump.java b/core/src/main/java/io/questdb/std/KestrelDump.java
+new file mode 100644
+index 0000000000..e5929c5555
+--- /dev/null
++++ b/core/src/main/java/io/questdb/std/KestrelDump.java
+@@ -0,0 +1,20 @@
++package io.questdb.std;
++import java.io.FileOutputStream;
++import java.util.concurrent.atomic.AtomicInteger;
++public final class KestrelDump {
++    private static final String DIR = System.getProperty("KESTREL_DUMP_DIR", System.getenv("KESTREL_DUMP_DIR"));
++    private static final int MAX;
++    static { String m = System.getProperty("KESTREL_DUMP_MAX", System.getenv("KESTREL_DUMP_MAX")); MAX = (m == null) ? 64 : Integer.parseInt(m); }
++    private static final AtomicInteger EGRESS = new AtomicInteger();
++    private static final AtomicInteger INGRESS = new AtomicInteger();
++    public static boolean on() { return DIR != null; }
++    public static void dump(String kind, long addr, int len) {
++        if (DIR == null || len <= 0) return;
++        AtomicInteger seq = "egress".equals(kind) ? EGRESS : INGRESS;
++        int n = seq.getAndIncrement(); if (n >= MAX) return;
++        byte[] b = new byte[len];
++        for (int i = 0; i < len; i++) b[i] = Unsafe.getByte(addr + i);
++        try (FileOutputStream f = new FileOutputStream(String.format("%s/%s-%03d.bin", DIR, kind, n))) { f.write(b); }
++        catch (Exception e) { System.err.println("KestrelDump: " + e); }
++    }
++}
